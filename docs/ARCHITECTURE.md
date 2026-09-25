@@ -1609,6 +1609,21 @@ failure is non-fatal: logged and skipped, raw octets left in place (the
 inner `except KeyError` around the `namedType.openType[governingValue]`
 lookup).
 
+Static maps are not the only resolution strategy: `OpenType` also accepts a
+`resolver` callable (see `pyasn1.type.opentype.OpenType`), consulted instead
+of both maps when present. `ConstructedPayloadDecoderBase._resolveOpenType`
+invokes it as `resolver(governingValue, container, fieldPath)` with the
+fully decoded parent container (so protocol-version siblings can steer the
+choice) and a field path accumulated through open-type re-decodes in
+`options['_openTypePath']` (tuple entries are field names plus
+`SEQUENCE OF`/`SET OF` element positions). Unlike a static-map miss,
+resolver failure is fatal: a resolver that raises, returns a non-ASN.1
+object, or faces a valueless governing component raises `PyAsn1Error`
+naming the field position, and the raw payload is never retried as another
+type. The context is per-decode state riding the options dict, so nested
+open types, `SEQUENCE OF` elements and concurrently running decoders each
+see their own.
+
 ### Bounding nesting depth
 
 Counting stack frames cannot bound this decoder: the "recursion" is a chain
@@ -1882,4 +1897,3 @@ them as a drive-by; each needs its own dedicated change with tests.
   literal text. Not worth a churn-heavy rewrite mid-release; if ever fixed,
   do it as a dedicated pass verified with `tox -e docs`, since the file is
   compiled into the `-W` build.
-

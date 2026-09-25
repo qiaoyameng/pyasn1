@@ -93,6 +93,23 @@ class TaggedAnyOpenTypeTestCase(BaseTestCase):
         self.s['blob'] = univ.Integer(123)
 
 
+class OpenTypeResolverTestCase(BaseTestCase):
+
+    def testNoResolverByDefault(self):
+        assert opentype.OpenType('id').resolver is None
+        assert opentype.OpenType('id', {1: univ.Integer()}).resolver is None
+
+    def testResolverIsExposed(self):
+        def resolve(governingValue, container, fieldPath):
+            return univ.Integer()
+
+        openType = opentype.OpenType('id', resolver=resolve)
+
+        assert openType.resolver is resolve
+        assert openType.name == 'id'
+        assert list(openType.keys()) == []
+
+
 suite = unittest.TestLoader().loadTestsFromModule(sys.modules[__name__])
 
 

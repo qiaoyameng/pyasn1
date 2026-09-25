@@ -37,6 +37,27 @@ class OpenType(object):
         A map of value->ASN.1 type. It's stored by reference and can be
         mutated later to register new mappings.
 
+    resolver: callable
+        Optional callable resolving the ASN.1 type of the untyped field
+        at decode time. It is consulted (instead of `typeMap` and the
+        decoder's `openTypes` option) whenever open types are decoded,
+        e.g. under `decodeOpenTypes=True`.
+
+        The callable is invoked as
+        ``resolver(governingValue, container, fieldPath)`` where
+        `governingValue` is the decoded value of the field named `name`,
+        `container` is the fully decoded parent ASN.1 container object
+        (sibling fields, e.g. a protocol version, can be read from it),
+        and `fieldPath` is a tuple of field names (and
+        `SEQUENCE OF`/`SET OF` element positions) locating the untyped
+        field within the decoded structure.
+
+        The callable must return an ASN.1 type object to decode the
+        field payload with. If it raises, or returns an object that is
+        not an ASN.1 type, decoding fails with
+        :py:class:`~pyasn1.error.PyAsn1Error` reporting the field
+        position; the raw payload is never retried as another type.
+
     Examples
     --------
 
@@ -70,18 +91,41 @@ class OpenType(object):
                           openType=openType)
             )
         )
+
+    For protocol-version-dependent typing:
+
+    .. code-block:: python
+
+        def resolveByVersion(governingValue, container, fieldPath):
+            if container['version'] == 1:
+                return Integer()
+            return OctetString()
+
+        openType = OpenType('id', resolver=resolveByVersion)
+        Sequence(
+            componentType=NamedTypes(
+                NamedType('version', Integer()),
+                NamedType('id', ObjectIdentifier()),
+                NamedType('blob', Any(), openType=openType)
+            )
+        )
     """
 
-    def __init__(self, name, typeMap=None):
+    def __init__(self, name, typeMap=None, resolver=None):
         self.__name = name
         if typeMap is None:
             self.__typeMap = {}
         else:
             self.__typeMap = typeMap
+        self.__resolver = resolver
 
     @property
     def name(self):
         return self.__name
+
+    @property
+    def resolver(self):
+        return self.__resolver
 
     # Python dict protocol
 

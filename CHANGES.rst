@@ -1,6 +1,13 @@
 Revision 0.7.0, released XX-XX-2026
 ---------------------------------------
 
+- Added optional `resolver` callable to `pyasn1.type.opentype.OpenType`
+  for dynamic open type resolution at decode time. The resolver receives
+  the governing field value, the fully decoded parent container and the
+  field path, and returns the ASN.1 type to decode the open-typed field
+  with, so type selection can depend on sibling fields such as a protocol
+  version. Resolver failures raise `PyAsn1Error` naming the field
+  position; static dictionary mappings keep working unchanged
 - Fixed OverflowError from BER/CER/DER length values that fit in the
   supported 8-octet length field but exceed the platform maximum readable
   size. Such oversized definite lengths are now rejected with PyAsn1Error.

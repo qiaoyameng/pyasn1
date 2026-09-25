@@ -707,6 +707,73 @@ class ConstructedPayloadDecoderBase(AbstractConstructedPayloadDecoder):
 
         yield asn1Object
 
+    def _resolveOpenType(self, namedType, governingValue, asn1Object,
+                         openTypes, options):
+        """Resolve the ASN.1 type to decode an open-typed component with.
+
+        Returns a tuple of the resolved ASN.1 type object (or `None` if
+        no static mapping matches the governing value) and the field
+        path of the open-typed component.
+        """
+        openType = namedType.openType
+
+        fieldPath = options.get('_openTypePath', ()) + (namedType.name,)
+
+        if openType.resolver is not None:
+            fieldPosition = '.'.join(str(field) for field in fieldPath)
+
+            if not governingValue.isValue:
+                raise error.PyAsn1Error(
+                    'Cannot resolve open type at %s: governing component '
+                    '%r has no value' % (fieldPosition, openType.name))
+
+            try:
+                resolvedType = openType.resolver(
+                    governingValue, asn1Object, fieldPath)
+
+            except Exception as exc:
+                raise error.PyAsn1Error(
+                    'Open type resolver at %s failed: %s' % (
+                        fieldPosition, exc))
+
+            if not isinstance(resolvedType, base.Asn1Item):
+                raise error.PyAsn1Error(
+                    'Open type resolver at %s returned invalid ASN.1 '
+                    'schema %r' % (fieldPosition, resolvedType))
+
+            if LOG:
+                LOG('resolved open type %r at %s by resolver' % (
+                    resolvedType, fieldPosition))
+
+            return resolvedType, fieldPath
+
+        try:
+            resolvedType = openTypes[governingValue]
+
+        except KeyError:
+
+            if LOG:
+                LOG('default open types map of component '
+                    '"%s.%s" governed by component "%s.%s"'
+                    ':' % (asn1Object.__class__.__name__,
+                           namedType.name,
+                           asn1Object.__class__.__name__,
+                           openType.name))
+
+                for k, v in openType.items():
+                    LOG('%s -> %r' % (k, v))
+
+            try:
+                resolvedType = openType[governingValue]
+
+            except KeyError:
+                if LOG:
+                    LOG('failed to resolve open type by governing '
+                        'value %r' % (governingValue,))
+                return None, fieldPath
+
+        return resolvedType, fieldPath
+
     def valueDecoder(self, substrate, asn1Spec,
                      tagSet=None, length=None, state=None,
                      decodeFun=None, substrateFun=None,
@@ -845,30 +912,12 @@ class ConstructedPayloadDecoderBase(AbstractConstructedPayloadDecoder):
                                 namedType.openType.name
                             )
 
-                            try:
-                                openType = openTypes[governingValue]
+                            openType, fieldPath = self._resolveOpenType(
+                                namedType, governingValue, asn1Object,
+                                openTypes, options)
 
-                            except KeyError:
-
-                                if LOG:
-                                    LOG('default open types map of component '
-                                        '"%s.%s" governed by component "%s.%s"'
-                                        ':' % (asn1Object.__class__.__name__,
-                                               namedType.name,
-                                               asn1Object.__class__.__name__,
-                                               namedType.openType.name))
-
-                                    for k, v in namedType.openType.items():
-                                        LOG('%s -> %r' % (k, v))
-
-                                try:
-                                    openType = namedType.openType[governingValue]
-
-                                except KeyError:
-                                    if LOG:
-                                        LOG('failed to resolve open type by governing '
-                                            'value %r' % (governingValue,))
-                                    continue
+                            if openType is None:
+                                continue
 
                             if LOG:
                                 LOG('resolved open type %r by governing '
@@ -884,7 +933,9 @@ class ConstructedPayloadDecoderBase(AbstractConstructedPayloadDecoder):
 
                                     stream = asSeekableStream(containerValue[pos].asOctets())
 
-                                    for component in decodeFun(stream, asn1Spec=openType, **options):
+                                    for component in decodeFun(
+                                            stream, asn1Spec=openType,
+                                            **dict(options, _openTypePath=fieldPath + (pos,))):
                                         if isinstance(component, SubstrateUnderrunError):
                                             yield component
 
@@ -893,7 +944,9 @@ class ConstructedPayloadDecoderBase(AbstractConstructedPayloadDecoder):
                             else:
                                 stream = asSeekableStream(asn1Object.getComponentByPosition(idx).asOctets())
 
-                                for component in decodeFun(stream, asn1Spec=openType, **options):
+                                for component in decodeFun(
+                                        stream, asn1Spec=openType,
+                                        **dict(options, _openTypePath=fieldPath)):
                                     if isinstance(component, SubstrateUnderrunError):
                                         yield component
 
@@ -1064,30 +1117,12 @@ class ConstructedPayloadDecoderBase(AbstractConstructedPayloadDecoder):
                                 namedType.openType.name
                             )
 
-                            try:
-                                openType = openTypes[governingValue]
+                            openType, fieldPath = self._resolveOpenType(
+                                namedType, governingValue, asn1Object,
+                                openTypes, options)
 
-                            except KeyError:
-
-                                if LOG:
-                                    LOG('default open types map of component '
-                                        '"%s.%s" governed by component "%s.%s"'
-                                        ':' % (asn1Object.__class__.__name__,
-                                               namedType.name,
-                                               asn1Object.__class__.__name__,
-                                               namedType.openType.name))
-
-                                    for k, v in namedType.openType.items():
-                                        LOG('%s -> %r' % (k, v))
-
-                                try:
-                                    openType = namedType.openType[governingValue]
-
-                                except KeyError:
-                                    if LOG:
-                                        LOG('failed to resolve open type by governing '
-                                            'value %r' % (governingValue,))
-                                    continue
+                            if openType is None:
+                                continue
 
                             if LOG:
                                 LOG('resolved open type %r by governing '
@@ -1104,7 +1139,8 @@ class ConstructedPayloadDecoderBase(AbstractConstructedPayloadDecoder):
                                     stream = asSeekableStream(containerValue[pos].asOctets())
 
                                     for component in decodeFun(stream, asn1Spec=openType,
-                                                               **dict(options, allowEoo=True)):
+                                                               **dict(options, allowEoo=True,
+                                                                      _openTypePath=fieldPath + (pos,))):
                                         if isinstance(component, SubstrateUnderrunError):
                                             yield component
 
@@ -1116,7 +1152,8 @@ class ConstructedPayloadDecoderBase(AbstractConstructedPayloadDecoder):
                             else:
                                 stream = asSeekableStream(asn1Object.getComponentByPosition(idx).asOctets())
                                 for component in decodeFun(stream, asn1Spec=openType,
-                                                           **dict(options, allowEoo=True)):
+                                                           **dict(options, allowEoo=True,
+                                                                  _openTypePath=fieldPath)):
                                     if isinstance(component, SubstrateUnderrunError):
                                         yield component
 
