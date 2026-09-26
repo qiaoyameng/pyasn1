@@ -1516,6 +1516,279 @@ class SequenceDecoderWithExplicitlyTaggedSetOfOpenTypesTestCase(BaseTestCase):
         assert s[1][0] == univ.OctetString(hexValue='02010C')
 
 
+class SequenceDecoderWithOpenTypeResolverTestCase(BaseTestCase):
+    def setUp(self):
+        BaseTestCase.setUp(self)
+
+        class V1Payload(univ.Sequence):
+            componentType = namedtype.NamedTypes(
+                namedtype.NamedType('text', univ.OctetString())
+            )
+
+        class V2Payload(univ.Sequence):
+            componentType = namedtype.NamedTypes(
+                namedtype.NamedType('number', univ.Integer())
+            )
+
+        self.V1Payload = V1Payload
+        self.V2Payload = V2Payload
+
+        oid = univ.ObjectIdentifier('1.2.3')
+
+        def resolve(governingValue, context):
+            if governingValue != oid:
+                return None
+
+            version = context.sibling('version')
+
+            if version == 1:
+                return V1Payload()
+
+            if version == 2:
+                return V2Payload()
+
+            return None
+
+        openType = opentype.OpenType(
+            'id',
+            {univ.ObjectIdentifier('2.3.4'): univ.Integer()},
+            resolver=resolve
+        )
+        self.s = univ.Sequence(
+            componentType=namedtype.NamedTypes(
+                namedtype.NamedType('version', univ.Integer()),
+                namedtype.NamedType('id', univ.ObjectIdentifier()),
+                namedtype.NamedType('blob', univ.Any(), openType=openType)
+            )
+        )
+
+    def testResolveSameOidByOuterVersionOne(self):
+        s, r = decoder.decode(
+            bytes((48, 14, 2, 1, 1, 6, 2, 42, 3, 48, 5, 4, 3, 102, 111, 111)),
+            asn1Spec=self.s, decodeOpenTypes=True
+        )
+        assert not r
+        assert s[0] == 1
+        assert isinstance(s['blob'], self.V1Payload)
+        assert s['blob']['text'] == univ.OctetString('foo')
+
+    def testResolveSameOidByOuterVersionTwo(self):
+        s, r = decoder.decode(
+            bytes((48, 12, 2, 1, 2, 6, 2, 42, 3, 48, 3, 2, 1, 42)),
+            asn1Spec=self.s, decodeOpenTypes=True
+        )
+        assert not r
+        assert s[0] == 2
+        assert isinstance(s['blob'], self.V2Payload)
+        assert s['blob']['number'] == 42
+
+    def testResolverFallsBackToTypeMap(self):
+        s, r = decoder.decode(
+            bytes((48, 10, 2, 1, 1, 6, 2, 83, 4, 2, 1, 7)),
+            asn1Spec=self.s, decodeOpenTypes=True
+        )
+        assert not r
+        assert s['blob'] == 7
+
+    def testInterleavedDecodersHoldOwnContext(self):
+        stream1 = io.BytesIO(
+            bytes((48, 14, 2, 1, 1, 6, 2, 42, 3, 48, 5, 4, 3, 102, 111, 111)))
+        stream2 = io.BytesIO(
+            bytes((48, 12, 2, 1, 2, 6, 2, 42, 3, 48, 3, 2, 1, 42)))
+
+        decoder1 = iter(decoder.StreamingDecoder(
+            stream1, asn1Spec=self.s, decodeOpenTypes=True))
+        decoder2 = iter(decoder.StreamingDecoder(
+            stream2, asn1Spec=self.s, decodeOpenTypes=True))
+
+        s1 = next(decoder1)
+        s2 = next(decoder2)
+
+        assert isinstance(s1['blob'], self.V1Payload)
+        assert isinstance(s2['blob'], self.V2Payload)
+
+
+class SequenceDecoderWithOpenTypeResolverErrorsTestCase(BaseTestCase):
+    def setUp(self):
+        BaseTestCase.setUp(self)
+
+        def failingResolver(governingValue, context):
+            raise ValueError('resolver boom')
+
+        def invalidSchemaResolver(governingValue, context):
+            return 'not-a-schema'
+
+        def siblingResolver(governingValue, context):
+            return univ.Integer(context.sibling('extra'))
+
+        def makeSchema(resolver, *tail):
+            return univ.Sequence(
+                componentType=namedtype.NamedTypes(
+                    namedtype.NamedType('version', univ.Integer()),
+                    namedtype.NamedType('id', univ.ObjectIdentifier()),
+                    namedtype.NamedType(
+                        'blob', univ.Any(),
+                        openType=opentype.OpenType('id', resolver=resolver)),
+                    *tail
+                )
+            )
+
+        self.failingSchema = makeSchema(failingResolver)
+        self.invalidSchemaSchema = makeSchema(invalidSchemaResolver)
+        self.siblingSchema = makeSchema(
+            siblingResolver,
+            namedtype.OptionalNamedType('extra', univ.Integer()))
+        self.missingGoverningSchema = univ.Sequence(
+            componentType=namedtype.NamedTypes(
+                namedtype.NamedType('version', univ.Integer()),
+                namedtype.OptionalNamedType('id', univ.ObjectIdentifier()),
+                namedtype.NamedType(
+                    'blob', univ.Any(),
+                    openType=opentype.OpenType('id', resolver=failingResolver))
+            )
+        )
+
+    def testResolverErrorKeepsFieldPath(self):
+        try:
+            decoder.decode(
+                bytes((48, 12, 2, 1, 2, 6, 2, 42, 3, 48, 3, 2, 1, 42)),
+                asn1Spec=self.failingSchema, decodeOpenTypes=True
+            )
+
+        except error.PyAsn1Error as exc:
+            assert 'blob' in str(exc)
+            assert 'resolver boom' in str(exc)
+
+        else:
+            assert False, 'failing open type resolver tolerated'
+
+    def testResolverInvalidSchemaKeepsFieldPath(self):
+        try:
+            decoder.decode(
+                bytes((48, 12, 2, 1, 2, 6, 2, 42, 3, 48, 3, 2, 1, 42)),
+                asn1Spec=self.invalidSchemaSchema, decodeOpenTypes=True
+            )
+
+        except error.PyAsn1Error as exc:
+            assert 'blob' in str(exc)
+
+        else:
+            assert False, 'invalid resolver schema tolerated'
+
+    def testResolverUndecodedSibling(self):
+        try:
+            decoder.decode(
+                bytes((48, 12, 2, 1, 2, 6, 2, 42, 3, 48, 3, 2, 1, 42)),
+                asn1Spec=self.siblingSchema, decodeOpenTypes=True
+            )
+
+        except error.PyAsn1Error as exc:
+            assert 'blob' in str(exc)
+            assert 'extra' in str(exc)
+
+        else:
+            assert False, 'undecoded resolver dependency tolerated'
+
+    def testResolverMissingGoverningValue(self):
+        try:
+            decoder.decode(
+                bytes((48, 8, 2, 1, 1, 48, 3, 2, 1, 42)),
+                asn1Spec=self.missingGoverningSchema, decodeOpenTypes=True
+            )
+
+        except error.PyAsn1Error as exc:
+            assert 'blob' in str(exc)
+            assert 'id' in str(exc)
+
+        else:
+            assert False, 'missing governing value tolerated'
+
+
+class SequenceDecoderWithNestedOpenTypeResolverTestCase(BaseTestCase):
+    def setUp(self):
+        BaseTestCase.setUp(self)
+
+        self.innerPaths = []
+
+        def innerResolver(governingValue, context):
+            self.innerPaths.append(context.path)
+            return univ.Integer()
+
+        class Inner(univ.Sequence):
+            componentType = namedtype.NamedTypes(
+                namedtype.NamedType('kind', univ.Integer()),
+                namedtype.NamedType(
+                    'payload', univ.Any(),
+                    openType=opentype.OpenType('kind', resolver=innerResolver))
+            )
+
+        def outerResolver(governingValue, context):
+            return Inner()
+
+        self.s = univ.Sequence(
+            componentType=namedtype.NamedTypes(
+                namedtype.NamedType('id', univ.Integer()),
+                namedtype.NamedType(
+                    'blob', univ.Any(),
+                    openType=opentype.OpenType('id', resolver=outerResolver))
+            )
+        )
+
+    def testNestedResolversHoldOwnContext(self):
+        s, r = decoder.decode(
+            bytes((48, 11, 2, 1, 7, 48, 6, 2, 1, 1, 2, 1, 5)),
+            asn1Spec=self.s, decodeOpenTypes=True
+        )
+        assert not r
+        assert s['blob']['payload'] == 5
+        assert self.innerPaths == [('blob', 'payload')]
+
+
+class SequenceOfDecoderWithOpenTypeResolverTestCase(BaseTestCase):
+    def setUp(self):
+        BaseTestCase.setUp(self)
+
+        self.innerPaths = []
+
+        def innerResolver(governingValue, context):
+            self.innerPaths.append(context.path)
+            return univ.Integer()
+
+        class Inner(univ.Sequence):
+            componentType = namedtype.NamedTypes(
+                namedtype.NamedType('kind', univ.Integer()),
+                namedtype.NamedType(
+                    'payload', univ.Any(),
+                    openType=opentype.OpenType('kind', resolver=innerResolver))
+            )
+
+        def outerResolver(governingValue, context):
+            self.outerPath = context.path
+            return Inner()
+
+        self.s = univ.Sequence(
+            componentType=namedtype.NamedTypes(
+                namedtype.NamedType('id', univ.Integer()),
+                namedtype.NamedType(
+                    'items', univ.SequenceOf(componentType=univ.Any()),
+                    openType=opentype.OpenType('id', resolver=outerResolver))
+            )
+        )
+
+    def testSequenceOfElementsHoldOwnContext(self):
+        s, r = decoder.decode(
+            bytes((48, 21, 2, 1, 1, 48, 16, 48, 6, 2, 1, 1, 2, 1, 10,
+                   48, 6, 2, 1, 1, 2, 1, 11)),
+            asn1Spec=self.s, decodeOpenTypes=True
+        )
+        assert not r
+        assert self.outerPath == ('items',)
+        assert s['items'][0]['payload'] == 10
+        assert s['items'][1]['payload'] == 11
+        assert self.innerPaths == [
+            ('items', 0, 'payload'), ('items', 1, 'payload')]
+
+
 class SetDecoderTestCase(BaseTestCase):
     def setUp(self):
         BaseTestCase.setUp(self)

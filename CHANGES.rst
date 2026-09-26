@@ -1,6 +1,15 @@
 Revision 0.7.0, released XX-XX-2026
 ---------------------------------------
 
+- Added optional ``resolver`` callable to ``opentype.OpenType`` for
+  dynamic open type resolution. The resolver receives the governing
+  field value and an ``opentype.OpenTypeContext`` carrying the parent
+  container and field path, so the ASN.1 schema can be chosen based on
+  other already-decoded fields (e.g. an outer protocol version).
+  Resolver failures and invalid returned schemas abort decoding with
+  ``PyAsn1Error`` naming the field path; the static type map keeps
+  working as before and acts as fallback when the resolver returns
+  ``None``
 - Fixed OverflowError from BER/CER/DER length values that fit in the
   supported 8-octet length field but exceed the platform maximum readable
   size. Such oversized definite lengths are now rejected with PyAsn1Error.

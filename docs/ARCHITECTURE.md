@@ -80,7 +80,7 @@ The package is thirty-two modules; four carry most of the weight:
 | `type/namedtype.py` | `NamedTypes`: SEQUENCE/SET component definitions, eagerly precomputed |
 | `type/namedval.py` | `NamedValues`, the enumeration/named-bit mapping |
 | `type/constraint.py` | Constraint objects and their composition |
-| `type/opentype.py` | `OpenType`, the ANY-defined-by mapping |
+| `type/opentype.py` | `OpenType`, the ANY-defined-by mapping, plus `OpenTypeContext` for resolver callables |
 | `type/error.py` | A *second* `ValueConstraintError`, the one actually raised |
 | `codec/streaming.py` | `asSeekableStream`, `CachingStreamWrapper`, `readFromStream`: the resumable-stream engine |
 | `codec/ber/decoder.py` | The base decoder: payload decoders, the state machine, every security limit |
@@ -1609,6 +1609,23 @@ failure is non-fatal: logged and skipped, raw octets left in place (the
 inner `except KeyError` around the `namedType.openType[governingValue]`
 lookup).
 
+Besides the static map, `OpenType` accepts a `resolver` callable, consulted
+after the user-supplied `openTypes` map and before the static `typeMap`
+(returning `None` falls through to the map). The resolver receives the
+governing value and a freshly built `OpenTypeContext` carrying the parent
+container and the field path, so the choice can depend on other
+already-decoded fields such as an outer protocol version. The path travels
+in `options['_openTypePath']` and is extended at every open-type re-entry
+(with the element position for `SET OF`/`SEQUENCE OF` fields), which is
+what gives nested open types, container elements and concurrently running
+decoders their own resolution context. `OpenTypeContext.sibling()` is the
+guarded accessor for resolver dependencies: it raises on a sibling that
+carries no value, because resolvers must not peek at unfinished fields.
+Unlike map-lookup misses, resolver failures are fatal: a resolver that
+raises, returns a non-ASN.1 schema, or runs with a valueless governing
+component aborts the decode with `PyAsn1Error` naming the field path; the
+raw payload is never retried as another type.
+
 ### Bounding nesting depth
 
 Counting stack frames cannot bound this decoder: the "recursion" is a chain
@@ -1882,4 +1899,3 @@ them as a drive-by; each needs its own dedicated change with tests.
   literal text. Not worth a churn-heavy rewrite mid-release; if ever fixed,
   do it as a dedicated pass verified with `tox -e docs`, since the file is
   compiled into the `-W` build.
-

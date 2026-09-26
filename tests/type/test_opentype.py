@@ -93,6 +93,79 @@ class TaggedAnyOpenTypeTestCase(BaseTestCase):
         self.s['blob'] = univ.Integer(123)
 
 
+class OpenTypeResolverTestCase(BaseTestCase):
+
+    def testResolverStored(self):
+        def resolve(governingValue, context):
+            return univ.Integer()
+
+        ot = opentype.OpenType('id', resolver=resolve)
+
+        assert ot.resolver is resolve
+        assert ot.name == 'id'
+
+    def testNoResolver(self):
+        integer = univ.Integer()
+        ot = opentype.OpenType('id', {1: integer})
+
+        assert ot.resolver is None
+        assert ot[1] is integer
+
+    def testNonCallableResolver(self):
+        try:
+            opentype.OpenType('id', resolver='not-callable')
+
+        except PyAsn1Error:
+            pass
+
+        else:
+            assert False, 'non-callable resolver tolerated'
+
+
+class OpenTypeContextTestCase(BaseTestCase):
+
+    def setUp(self):
+        BaseTestCase.setUp(self)
+
+        class Sequence(univ.Sequence):
+            componentType = namedtype.NamedTypes(
+                namedtype.NamedType('version', univ.Integer()),
+                namedtype.OptionalNamedType('comment', univ.OctetString())
+            )
+
+        self.parent = Sequence()
+        self.parent['version'] = 2
+
+        self.context = opentype.OpenTypeContext(self.parent, ('blob',))
+
+    def testAttributes(self):
+        assert self.context.parent is self.parent
+        assert self.context.path == ('blob',)
+
+    def testSibling(self):
+        assert self.context.sibling('version') == 2
+
+    def testSiblingNotDecoded(self):
+        try:
+            self.context.sibling('comment')
+
+        except PyAsn1Error:
+            pass
+
+        else:
+            assert False, 'undecoded sibling read tolerated'
+
+    def testSiblingUnknown(self):
+        try:
+            self.context.sibling('nosuch')
+
+        except PyAsn1Error:
+            pass
+
+        else:
+            assert False, 'unknown sibling read tolerated'
+
+
 suite = unittest.TestLoader().loadTestsFromModule(sys.modules[__name__])
 
 

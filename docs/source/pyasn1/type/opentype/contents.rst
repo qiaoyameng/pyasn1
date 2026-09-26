@@ -108,6 +108,34 @@ constructs:
                      openType=OpenType('algorithm', algo_map))
        )
 
+When the type choice depends on more than the selector field alone, for
+example on a protocol version negotiated in an outer structure, a
+*resolver* callable can be given instead of (or alongside) the static
+map. The resolver is called with the selector value and an
+:ref:`OpenTypeContext <opentype.OpenType>` object exposing the parent
+container being decoded and the path of the open type field. Sibling
+fields are only readable once fully decoded; accessing an undecoded
+dependency through the context raises an error. Returning `None` from
+the resolver falls back to the static map lookup.
+
+.. code-block:: python
+
+   def resolve(governingValue, context):
+       version = context.sibling('version')
+       if version == 1:
+           return LegacyPayload()
+       return ModernPayload()
+
+
+   class Message(Sequence):
+       componentType = NamedTypes(
+           NamedType('version', Integer()),
+           NamedType('algorithm', ObjectIdentifier()),
+           NamedType('parameters', Any(),
+                     openType=OpenType('algorithm', algo_map,
+                                       resolver=resolve))
+       )
+
 .. toctree::
    :maxdepth: 2
 
