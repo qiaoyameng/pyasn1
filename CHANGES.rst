@@ -1,6 +1,14 @@
 Revision 0.7.0, released XX-XX-2026
 ---------------------------------------
 
+- Added ``pyasn1.codec.json`` codec: a JSON-safe, lossless
+  representation of ASN.1 values built on the native codec skeleton.
+  Arbitrary-precision integers, octets, bit strings (with effective
+  bit count), object identifiers and the chosen CHOICE alternative are
+  wrapped in explicit ``$``-prefixed tagged objects that cannot collide
+  with ASN.1 component names; absent OPTIONAL/DEFAULT components stay
+  absent. Decoding requires a schema, enforces its constraints and
+  never imports Python classes named by the document
 - Fixed OverflowError from BER/CER/DER length values that fit in the
   supported 8-octet length field but exceed the platform maximum readable
   size. Such oversized definite lengths are now rejected with PyAsn1Error.

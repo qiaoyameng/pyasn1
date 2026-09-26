@@ -12,7 +12,8 @@ suite = unittest.TestLoader().loadTestsFromNames(
      'tests.codec.ber.__main__.suite',
      'tests.codec.cer.__main__.suite',
      'tests.codec.der.__main__.suite',
-     'tests.codec.native.__main__.suite']
+     'tests.codec.native.__main__.suite',
+     'tests.codec.json.__main__.suite']
 )
 
 

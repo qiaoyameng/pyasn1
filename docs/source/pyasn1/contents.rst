@@ -213,6 +213,7 @@ implemented in pyasn1.
    /pyasn1/codec/cer/contents
    /pyasn1/codec/der/contents
    /pyasn1/codec/native/contents
+   /pyasn1/codec/json/contents
 
 Exceptions
 ----------

@@ -88,6 +88,7 @@ The package is thirty-two modules; four carry most of the weight:
 | `codec/ber/eoo.py` | The end-of-octets singleton |
 | `codec/cer/*`, `codec/der/*` | Derived codecs, sharing BER's objects by identity |
 | `codec/native/*` | Conversion to and from Python dicts, lists and scalars |
+| `codec/json/*` | Lossless, JSON-safe conversion with explicit `$`-tags |
 | `compat/integer.py` | A single `to_bytes` helper |
 | `debug.py` | The logging facility; see [The debug hook](#the-debug-hook) |
 | `error.py` | The exception hierarchy rooted at `PyAsn1Error` |
@@ -1181,6 +1182,42 @@ registered in `native.encoder.TYPE_MAP`. A subclass "fixed" via
 `Encoder.SINGLE_ITEM_ENCODER` while the assignment stands produces no
 observable effect: the debugging that follows is time spent on a path the
 module-level `encode` never takes.
+
+### The JSON codec
+
+`codec/json/` renders ASN.1 values as trees of JSON-safe Python objects
+(`dict`, `list`, `str`, `bool`, `None` only) for lossless round-trips
+through a JSON document. It borrows the native codec's skeleton but none
+of its return types: anything JSON scalars cannot express exactly is
+wrapped in a single-key *tagged* object whose key is one of the
+`TAG_*` constants in `codec/json/__init__.py` (`$int`, `$real`,
+`$bytes`, `$bits`, `$oid`, `$choice`). Tag names start with `$`, which
+cannot appear in an ASN.1 identifier, so a SEQUENCE/SET encoded as a
+plain object of component names can never collide with a tagged value,
+and the decoder rejects `$`-prefixed keys wherever the schema does not
+expect them.
+
+The format's contract points:
+
+- INTEGER/ENUMERATED payloads are decimal strings, so arbitrary
+  precision survives JSON's float64 intermediaries. `encoder._renderInteger`
+  falls back to `0x`-prefixed hexadecimal past the interpreter's
+  int-to-str limit (Python 3.11+), mirroring `tag._tagIdToStr`;
+  `decoder._parseInteger` accepts both forms.
+- BIT STRING payloads are `'0'`/`'1'` strings whose length is the
+  effective bit count; the encoder special-cases the zero-length value
+  because `BitString.asBinary()` renders it as `'0'`.
+- CHOICE is `{'$choice': {<name>: <value>}}`, making the selected
+  alternative explicit; absent OPTIONAL and DEFAULT components of a
+  SEQUENCE/SET are omitted keys, never materialised (the encoder keeps
+  the `instantiate=False` purity rule), so presence state round-trips.
+- The output is canonical: same value, same tree, and
+  `json.dumps(tree, sort_keys=True)` is byte-stable across runs.
+- Decoding requires `asn1Spec` and is driven by it alone - the JSON
+  document never names or imports a Python class. Constraints ride
+  `asn1Spec.clone(...)` as in the native decoder; unknown components,
+  unknown CHOICE alternatives, unknown tags and malformed payloads are
+  rejected with `PyAsn1Error` rather than silently coerced.
 
 ## The decoder pipeline
 
