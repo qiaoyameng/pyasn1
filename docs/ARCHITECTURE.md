@@ -1147,6 +1147,57 @@ governs how the encoders read the value; how they read the schema is a
 separate contract with its own reason not to change, described in [Recursive
 schemas](#recursive-schemas).
 
+### Streaming encoding: `iterencode`
+
+Alongside `encode`, each BER-family encoder module exposes `iterencode`
+(`ber/encoder.py`, `cer/encoder.py`, `der/encoder.py`), which returns a
+generator of `bytes` chunks instead of one concatenated substrate.
+`Encoder.iterEncode` forwards to `SingleItemEncoder.iterEncode`, which
+dispatches through the same `_lookupEncoder` lookup `__call__` uses and
+returns `AbstractItemEncoder.iterEncode`'s generator. Concatenating the
+chunks reproduces `encode()` output exactly; the cross-codec equality and
+laziness contracts are pinned in `tests/codec/test_iterencode.py`.
+
+The framing driver is `AbstractItemEncoder.iterEncode`, a generator
+mirroring `encode`. Its key input is the content length, needed before the
+first chunk whenever a definite-length header must be emitted (DER, BER
+with `defMode=True`, and any primitive value, whose innermost tag is
+always definite) or when the `ifNotEmpty` emptiness test applies. The
+length comes from `computeValueLength`/`computeLength`, a parallel
+length-only hierarchy that mirrors `encodeValue`/`encode` framing
+(`_frameHeaders` computes the per-tag-layer header/trailer octets both
+sides share) without building the substrate: `SequenceEncoder`,
+`SequenceOfEncoder`, `ChoiceEncoder` and CER's `SetEncoder` sum their
+children's lengths, `OctetStringEncoder`/`BitStringEncoder` use length
+arithmetic (chunked included), and small primitives fall back to encoding
+and measuring. `computeOctetsLength` covers the open-type wrap case,
+where the wrapped blob's length is known but its bytes are not needed.
+Because the length pass runs before the first chunk, DER (and BER
+definite-mode) touches every value once up front — that is the sanctioned
+length precomputation — but never retains a full encoded copy.
+
+With indefinite framing (BER `defMode=False`, CER) and no `ifNotEmpty` in
+effect, no length is needed at all: `iterEncode` yields the tag headers,
+then delegates to `iterEncodeValue`, which streams children one at a time
+(CER's segmented strings yield one TLV per segment), then the EOO
+trailers. Stopping the iteration early therefore leaves the rest of the
+value untraversed. Two exceptions buffer by construction: CER/DER SET OF
+sorting needs every sibling's encoding before any can be emitted, and the
+open-type wrap re-encodes an already-encoded component blob, matching
+what `encode` does.
+
+The invariant that matters most is that `computeValueLength` agrees with
+`encodeValue` on the exact content length for every input, and that
+`iterEncodeValue` emits exactly the bytes `encodeValue` would. To keep
+the three paths from drifting apart, the component-selection logic of
+`SequenceEncoder`, `SequenceOfEncoder` and CER's `SetEncoder` lives in
+shared `_iterComponents` generators that all three paths consume; the
+generators mutate the caller's `options` dict (`ifNotEmpty`, `wrapType`)
+in the same order the old inline loops did. One debug-hook caveat:
+`iterEncode`'s own `LOG` call must not format the whole value — under
+the test suite's enabled debug flags, stringifying a large container
+would traverse it and defeat the laziness the tests measure.
+
 ### The native codec
 
 `codec/native/` converts between pyasn1 objects and Python built-ins. It
@@ -1882,4 +1933,3 @@ them as a drive-by; each needs its own dedicated change with tests.
   literal text. Not worth a churn-heavy rewrite mid-release; if ever fixed,
   do it as a dedicated pass verified with `tox -e docs`, since the file is
   compiled into the `-W` build.
-

@@ -11,7 +11,7 @@ from pyasn1.codec.ber import encoder
 from pyasn1.type import univ
 from pyasn1.type import useful
 
-__all__ = ['Encoder', 'encode']
+__all__ = ['Encoder', 'encode', 'iterencode']
 
 
 class BooleanEncoder(encoder.IntegerEncoder):
@@ -111,10 +111,8 @@ class UTCTimeEncoder(TimeEncoderMixIn, encoder.OctetStringEncoder):
 
 
 class SetOfEncoder(encoder.SequenceOfEncoder):
-    def encodeValue(self, value, asn1Spec, encodeFun, **options):
-        chunks = self._encodeComponents(
-            value, asn1Spec, encodeFun, **options)
-
+    @staticmethod
+    def _sortChunks(chunks):
         # sort by serialised and padded components
         if len(chunks) > 1:
             zero = b'\x00'
@@ -126,7 +124,20 @@ class SetOfEncoder(encoder.SequenceOfEncoder):
 
             chunks = [x[1] for x in paddedChunks]
 
-        return b''.join(chunks), True, True
+        return chunks
+
+    def encodeValue(self, value, asn1Spec, encodeFun, **options):
+        chunks = self._encodeComponents(
+            value, asn1Spec, encodeFun, **options)
+
+        return b''.join(self._sortChunks(chunks)), True, True
+
+    def iterEncodeValue(self, value, asn1Spec, encodeFun, **options):
+        chunks = self._encodeComponents(
+            value, asn1Spec, encodeFun, **options)
+
+        for chunk in self._sortChunks(chunks):
+            yield chunk
 
 
 class SequenceOfEncoder(encoder.SequenceOfEncoder):
@@ -161,10 +172,13 @@ class SetEncoder(encoder.SequenceEncoder):
         else:
             return asn1Spec.tagSet
 
-    def encodeValue(self, value, asn1Spec, encodeFun, **options):
+    def _iterComponents(self, value, asn1Spec, options):
+        """Yield (component, componentSpec, wrapType) per component to encode,
+        in SET-of-components tag order.
 
-        substrate = b''
-
+        The `options` dict is mutated in place (e.g. `ifNotEmpty`) exactly
+        the way `encodeValue` used to do it.
+        """
         comps = []
         compsMap = {}
 
@@ -227,17 +241,66 @@ class SetEncoder(encoder.SequenceEncoder):
             if namedType:
                 options.update(ifNotEmpty=namedType.isOptional)
 
-            chunk = encodeFun(comp, compType, **options)
+            wrapType = None
 
             # wrap open type blob if needed
             if namedType and namedType.openType:
-                wrapType = namedType.asn1Object
-                if wrapType.tagSet and not wrapType.isSameTypeWith(comp):
-                    chunk = encodeFun(chunk, wrapType, **options)
+                candidate = namedType.asn1Object
+                if candidate.tagSet and not candidate.isSameTypeWith(comp):
+                    wrapType = candidate
+
+            yield comp, compType, wrapType
+
+    def encodeValue(self, value, asn1Spec, encodeFun, **options):
+
+        substrate = b''
+
+        for comp, compType, wrapType in self._iterComponents(
+                value, asn1Spec, options):
+
+            chunk = encodeFun(comp, compType, **options)
+
+            # wrap open type blob if needed
+            if wrapType is not None:
+                chunk = encodeFun(chunk, wrapType, **options)
 
             substrate += chunk
 
         return substrate, True, True
+
+    def computeValueLength(self, value, asn1Spec, encodeFun, **options):
+
+        length = 0
+
+        for comp, compType, wrapType in self._iterComponents(
+                value, asn1Spec, options):
+
+            chunkLength = encodeFun.computeLength(comp, compType, **options)
+
+            # wrap open type blob if needed
+            if wrapType is not None:
+                chunkLength = encodeFun.computeOctetsLength(
+                    chunkLength, wrapType, **options)
+
+            length += chunkLength
+
+        return length
+
+    def iterEncodeValue(self, value, asn1Spec, encodeFun, **options):
+
+        for comp, compType, wrapType in self._iterComponents(
+                value, asn1Spec, options):
+
+            if wrapType is not None:
+                chunk = encodeFun(comp, compType, **options)
+
+                for wrappedChunk in encodeFun.iterEncode(
+                        chunk, wrapType, **options):
+                    yield wrappedChunk
+
+            else:
+                for chunk in encodeFun.iterEncode(comp, compType, **options):
+                    yield chunk
 
 
 class SequenceEncoder(encoder.SequenceEncoder):
@@ -329,6 +392,44 @@ class Encoder(encoder.Encoder):
 #:    b'0\x80\x02\x01\x01\x02\x01\x02\x02\x01\x03\x00\x00'
 #:
 encode = Encoder()
+
+
+def iterencode(value, asn1Spec=None, **options):
+    """Turns ASN.1 object into CER octet stream, chunk by chunk.
+
+    Takes any ASN.1 object (e.g. :py:class:`~pyasn1.type.base.PyAsn1Item`
+    derivative), walks all its components recursively and produces a CER
+    octet stream lazily, yielding substrate chunks as soon as they are
+    available. Concatenating all the chunks yields exactly what
+    :py:data:`~pyasn1.codec.cer.encoder.encode` returns.
+
+    Constructed values and segmented (chunked) character strings are
+    encoded and yielded piece by piece; stopping the iteration early
+    avoids traversing the rest of the value.
+
+    Parameters
+    ----------
+    value: either a Python or pyasn1 object (e.g. :py:class:`~pyasn1.type.base.PyAsn1Item` derivative)
+        A Python or pyasn1 object to encode. If Python object is given, `asnSpec`
+        parameter is required to guide the encoding process.
+
+    Keyword Args
+    ------------
+    asn1Spec:
+        Optional ASN.1 schema or value object e.g. :py:class:`~pyasn1.type.base.PyAsn1Item` derivative
+
+    Yields
+    ------
+    : :py:class:`bytes`
+        Chunks of the CER octet stream
+
+    Raises
+    ------
+    ~pyasn1.error.PyAsn1Error
+        On encoding errors
+    """
+    return encode.iterEncode(value, asn1Spec=asn1Spec, **options)
+
 
 # EncoderFactory queries class instance and builds a map of tags -> encoders
 

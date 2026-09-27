@@ -10,7 +10,7 @@ from pyasn1 import error
 from pyasn1.codec.cer import encoder
 from pyasn1.type import univ
 
-__all__ = ['Encoder', 'encode']
+__all__ = ['Encoder', 'encode', 'iterencode']
 
 
 class SetEncoder(encoder.SetEncoder):
@@ -118,6 +118,46 @@ class Encoder(encoder.Encoder):
 #:    b'0\t\x02\x01\x01\x02\x01\x02\x02\x01\x03'
 #:
 encode = Encoder()
+
+
+def iterencode(value, asn1Spec=None, **options):
+    """Turns ASN.1 object into DER octet stream, chunk by chunk.
+
+    Takes any ASN.1 object (e.g. :py:class:`~pyasn1.type.base.PyAsn1Item`
+    derivative), walks all its components recursively and produces a DER
+    octet stream lazily, yielding substrate chunks as soon as they are
+    available. Concatenating all the chunks yields exactly what
+    :py:data:`~pyasn1.codec.der.encoder.encode` returns.
+
+    Since DER requires definite lengths, content lengths are precomputed
+    before the first chunk is yielded, but the encoded values are never
+    materialized as a whole: chunks are produced as the values are being
+    encoded, and stopping the iteration early avoids encoding the rest
+    of the value.
+
+    Parameters
+    ----------
+    value: either a Python or pyasn1 object (e.g. :py:class:`~pyasn1.type.base.PyAsn1Item` derivative)
+        A Python or pyasn1 object to encode. If Python object is given, `asnSpec`
+        parameter is required to guide the encoding process.
+
+    Keyword Args
+    ------------
+    asn1Spec:
+        Optional ASN.1 schema or value object e.g. :py:class:`~pyasn1.type.base.PyAsn1Item` derivative
+
+    Yields
+    ------
+    : :py:class:`bytes`
+        Chunks of the DER octet stream
+
+    Raises
+    ------
+    ~pyasn1.error.PyAsn1Error
+        On encoding errors
+    """
+    return encode.iterEncode(value, asn1Spec=asn1Spec, **options)
+
 
 def __getattr__(attr: str):
     if newAttr := {"tagMap": "TAG_MAP", "typeMap": "TYPE_MAP"}.get(attr):

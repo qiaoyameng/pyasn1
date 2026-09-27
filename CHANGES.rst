@@ -1,6 +1,13 @@
 Revision 0.7.0, released XX-XX-2026
 ---------------------------------------
 
+- Added ``iterencode()`` to the BER/CER/DER encoder modules, yielding the
+  encoded octet stream chunk by chunk as encoding progresses. BER
+  indefinite-length and CER segmented string encodings stream without
+  buffering, while definite-length codecs precompute content lengths
+  without retaining a full encoded copy. Concatenating the chunks
+  reproduces ``encode()`` output exactly, and stopping the iteration
+  early avoids traversing the rest of the value
 - Fixed OverflowError from BER/CER/DER length values that fit in the
   supported 8-octet length field but exceed the platform maximum readable
   size. Such oversized definite lengths are now rejected with PyAsn1Error.
