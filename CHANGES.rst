@@ -1,6 +1,14 @@
 Revision 0.7.0, released XX-XX-2026
 ---------------------------------------
 
+- Added `pyasn1.type.compatcheck.checkCompatibility`, a directed
+  old-to-new schema compatibility check. It reports `compatible`,
+  `incompatible` or `unknown` together with per-field findings (path
+  and reason), covering tag changes, SEQUENCE/SET member order and
+  optionality, CHOICE alternatives and value range, size, permitted
+  alphabet and single-value constraints. The check is static: it never
+  instantiates values and never calls user constraint callables, and
+  recursive schemas terminate via pairwise visit tracking
 - Fixed OverflowError from BER/CER/DER length values that fit in the
   supported 8-octet length field but exceed the platform maximum readable
   size. Such oversized definite lengths are now rejected with PyAsn1Error.
