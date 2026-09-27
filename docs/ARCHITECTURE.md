@@ -1147,6 +1147,38 @@ governs how the encoders read the value; how they read the schema is a
 separate contract with its own reason not to change, described in [Recursive
 schemas](#recursive-schemas).
 
+### Streaming encoding
+
+Beside `encode()`, each BER-family codec module exposes `iterencode()`,
+which yields the same octets as an iterator of `bytes` chunks instead of
+returning one blob; concatenating the chunks reproduces the `encode()`
+output exactly, and `tests/codec/test_iterencode.py` pins that equality
+per codec. The implementation is a parallel generator path, not a
+re-slicing of the `encode()` result: `AbstractItemEncoder.encodeIter`
+frames tags and lengths around a content-chunk iterator supplied by
+`encodeValueStream`, whose default implementation wraps `encodeValue`
+(fine for bounded primitives) and which `SequenceEncoder`,
+`SequenceOfEncoder`, `ChoiceEncoder` and the chunking string encoders
+override with true generators. CER and DER inherit the BER machinery and
+override only what their dialects change (CER `SetEncoder`/
+`SetOfEncoder` still sort fully-encoded components, so those two are
+inherently non-streaming).
+
+The framing mode decides how lazy the walk is. In indefinite length mode
+(BER `defMode=False`, all of CER) headers need no length, so chunks flow
+out as the value is traversed and abandoning the iterator never touches
+the remaining components. In definite length mode (all of DER) each
+tag's content length must precede the content, so `encodeIter` consumes
+the chunk iterator once to measure it, then re-invokes
+`encodeValueStream` to stream the content for real: two walks, but the
+full substrate is never materialized. One quirk is load-bearing for wire
+compatibility: the innermost tag of a *primitive* value is always
+emitted with a definite length even in indefinite mode (matching
+`AbstractItemEncoder.encode`), and when an indefinite-mode layer wraps a
+primitive whose encoder has `supportIndefLenMode = False`, the layer
+gets a definite length yet an EOO marker is still appended -- reproducing
+the exact byte stream of `encode()` takes precedence over tidiness here.
+
 ### The native codec
 
 `codec/native/` converts between pyasn1 objects and Python built-ins. It
@@ -1882,4 +1914,3 @@ them as a drive-by; each needs its own dedicated change with tests.
   literal text. Not worth a churn-heavy rewrite mid-release; if ever fixed,
   do it as a dedicated pass verified with `tox -e docs`, since the file is
   compiled into the `-W` build.
-

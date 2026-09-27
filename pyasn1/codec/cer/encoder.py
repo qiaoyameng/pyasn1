@@ -11,7 +11,7 @@ from pyasn1.codec.ber import encoder
 from pyasn1.type import univ
 from pyasn1.type import useful
 
-__all__ = ['Encoder', 'encode']
+__all__ = ['Encoder', 'encode', 'iterencode']
 
 
 class BooleanEncoder(encoder.IntegerEncoder):
@@ -111,6 +111,23 @@ class UTCTimeEncoder(TimeEncoderMixIn, encoder.OctetStringEncoder):
 
 
 class SetOfEncoder(encoder.SequenceOfEncoder):
+    def encodeValueStream(self, value, asn1Spec, encodeFun, **options):
+        chunks = self._encodeComponents(
+            value, asn1Spec, encodeFun, **options)
+
+        # sort by serialised and padded components
+        if len(chunks) > 1:
+            zero = b'\x00'
+            maxLen = max(map(len, chunks))
+            paddedChunks = [
+                (x.ljust(maxLen, zero), x) for x in chunks
+            ]
+            paddedChunks.sort(key=lambda x: x[0])
+
+            chunks = [x[1] for x in paddedChunks]
+
+        return True, chunks
+
     def encodeValue(self, value, asn1Spec, encodeFun, **options):
         chunks = self._encodeComponents(
             value, asn1Spec, encodeFun, **options)
@@ -130,6 +147,14 @@ class SetOfEncoder(encoder.SequenceOfEncoder):
 
 
 class SequenceOfEncoder(encoder.SequenceOfEncoder):
+    def encodeValueStream(self, value, asn1Spec, encodeFun, **options):
+
+        if options.get('ifNotEmpty', False) and not len(value):
+            return True, ()
+
+        return encoder.SequenceOfEncoder.encodeValueStream(
+            self, value, asn1Spec, encodeFun, **options)
+
     def encodeValue(self, value, asn1Spec, encodeFun, **options):
 
         if options.get('ifNotEmpty', False) and not len(value):
@@ -239,6 +264,92 @@ class SetEncoder(encoder.SequenceEncoder):
 
         return substrate, True, True
 
+    def encodeValueStream(self, value, asn1Spec, encodeFun, **options):
+
+        comps = []
+        compsMap = {}
+
+        if asn1Spec is None:
+            # instance of ASN.1 schema
+            inconsistency = value.isInconsistent
+            if inconsistency:
+                raise error.PyAsn1Error(
+                    f"ASN.1 object {value.__class__.__name__} is inconsistent")
+
+            namedTypes = value.componentType
+
+            for idx in range(value._componentTypeLen or len(value._dynamicNames)):
+                component = value.getComponentByPosition(idx, instantiate=False)
+
+                if namedTypes:
+                    namedType = namedTypes[idx]
+
+                    if component is univ.noValue and (
+                            namedType.isOptional or namedType.isDefaulted):
+                        continue
+                    elif component is univ.noValue:
+                        component = namedType.asn1Object
+
+                    if namedType.isOptional and not component.isValue:
+                            continue
+
+                    if namedType.isDefaulted and component == namedType.asn1Object:
+                            continue
+
+                    compsMap[id(component)] = namedType
+
+                else:
+                    compsMap[id(component)] = None
+
+                comps.append((component, asn1Spec))
+
+        else:
+            # bare Python value + ASN.1 schema
+            for idx, namedType in enumerate(asn1Spec.componentType.namedTypes):
+
+                try:
+                    component = value[namedType.name]
+
+                except KeyError:
+                    raise error.PyAsn1Error('Component name "%s" not found in %r' % (
+                        namedType.name, value))
+
+                if namedType.isOptional and namedType.name not in value:
+                    continue
+
+                if namedType.isDefaulted and component == namedType.asn1Object:
+                    continue
+
+                compsMap[id(component)] = namedType
+                comps.append((component, asn1Spec[idx]))
+
+        sortedComponents = sorted(comps, key=self._componentSortKey)
+
+        def chunks():
+            for comp, compType in sortedComponents:
+                namedType = compsMap[id(comp)]
+
+                if namedType:
+                    options.update(ifNotEmpty=namedType.isOptional)
+
+                # wrap open type blob if needed
+                if namedType and namedType.openType:
+                    wrapType = namedType.asn1Object
+
+                    if wrapType.tagSet and not wrapType.isSameTypeWith(comp):
+                        chunk = encodeFun(comp, compType, **options)
+
+                        for wrappedChunk in encodeFun.iterencode(
+                                chunk, wrapType, **options):
+                            yield wrappedChunk
+
+                        continue
+
+                for chunk in encodeFun.iterencode(comp, compType, **options):
+                    yield chunk
+
+        return True, chunks()
+
 
 class SequenceEncoder(encoder.SequenceEncoder):
     omitEmptyOptionals = True
@@ -329,6 +440,22 @@ class Encoder(encoder.Encoder):
 #:    b'0\x80\x02\x01\x01\x02\x01\x02\x02\x01\x03\x00\x00'
 #:
 encode = Encoder()
+
+#: Turns ASN.1 object into a CER octet stream, chunk by chunk.
+#:
+#: Like :py:func:`~pyasn1.codec.cer.encoder.encode`, but yields the encoded
+#: octets as a sequence of :py:class:`bytes` chunks. Concatenating all
+#: chunks produces exactly what
+#: :py:func:`~pyasn1.codec.cer.encoder.encode` returns. Since CER framing
+#: is indefinite-length, chunks are produced as the value is walked and
+#: stopping the iteration early avoids traversing the rest of the value.
+#:
+#: Returns
+#: -------
+#: : :py:class:`iterator` of :py:class:`bytes`
+#:     Given ASN.1 object encoded into CER octetstream chunks
+#:
+iterencode = Encoder().iterencode
 
 # EncoderFactory queries class instance and builds a map of tags -> encoders
 

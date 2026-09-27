@@ -10,7 +10,7 @@ from pyasn1 import error
 from pyasn1.codec.cer import encoder
 from pyasn1.type import univ
 
-__all__ = ['Encoder', 'encode']
+__all__ = ['Encoder', 'encode', 'iterencode']
 
 
 class SetEncoder(encoder.SetEncoder):
@@ -118,6 +118,22 @@ class Encoder(encoder.Encoder):
 #:    b'0\t\x02\x01\x01\x02\x01\x02\x02\x01\x03'
 #:
 encode = Encoder()
+
+#: Turns ASN.1 object into a DER octet stream, chunk by chunk.
+#:
+#: Like :py:func:`~pyasn1.codec.der.encoder.encode`, but yields the encoded
+#: octets as a sequence of :py:class:`bytes` chunks. Concatenating all
+#: chunks produces exactly what
+#: :py:func:`~pyasn1.codec.der.encoder.encode` returns. DER framing needs
+#: definite lengths, so content lengths are measured up front by walking
+#: the value twice; the full substrate is never materialized.
+#:
+#: Returns
+#: -------
+#: : :py:class:`iterator` of :py:class:`bytes`
+#:     Given ASN.1 object encoded into DER octetstream chunks
+#:
+iterencode = Encoder().iterencode
 
 def __getattr__(attr: str):
     if newAttr := {"tagMap": "TAG_MAP", "typeMap": "TYPE_MAP"}.get(attr):

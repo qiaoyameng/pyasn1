@@ -1,6 +1,14 @@
 Revision 0.7.0, released XX-XX-2026
 ---------------------------------------
 
+- Added ``iterencode()`` to the BER/CER/DER encoders, yielding the encoded
+  octets chunk by chunk as an alternative to ``encode()`` returning a
+  single blob. Concatenating all chunks reproduces the ``encode()``
+  output exactly. BER indefinite-length and CER encodings stream the
+  chunks as the value is walked (stopping the iteration early avoids
+  traversing the rest of the value), while DER measures content lengths
+  up front by walking the value twice; neither mode materializes the
+  full substrate
 - Fixed OverflowError from BER/CER/DER length values that fit in the
   supported 8-octet length field but exceed the platform maximum readable
   size. Such oversized definite lengths are now rejected with PyAsn1Error.
