@@ -65,7 +65,7 @@ here.
 
 ### Module map
 
-The package is thirty-two modules; four carry most of the weight:
+The package is thirty-three modules; four carry most of the weight:
 `type/univ.py` (~3,300 lines), `codec/ber/decoder.py` (~2,200),
 `codec/ber/encoder.py` (~960), `type/constraint.py` (~750).
 
@@ -80,6 +80,7 @@ The package is thirty-two modules; four carry most of the weight:
 | `type/namedtype.py` | `NamedTypes`: SEQUENCE/SET component definitions, eagerly precomputed |
 | `type/namedval.py` | `NamedValues`, the enumeration/named-bit mapping |
 | `type/constraint.py` | Constraint objects and their composition |
+| `type/compat.py` | Static schema compatibility checker: `checkCompatibility` compares two schemas and reports `compatible`/`incompatible`/`unknown` with per-node findings |
 | `type/opentype.py` | `OpenType`, the ANY-defined-by mapping |
 | `type/error.py` | A *second* `ValueConstraintError`, the one actually raised |
 | `codec/streaming.py` | `asSeekableStream`, `CachingStreamWrapper`, `readFromStream`: the resumable-stream engine |
@@ -1882,4 +1883,3 @@ them as a drive-by; each needs its own dedicated change with tests.
   literal text. Not worth a churn-heavy rewrite mid-release; if ever fixed,
   do it as a dedicated pass verified with `tox -e docs`, since the file is
   compiled into the `-W` build.
-
