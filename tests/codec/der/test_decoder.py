@@ -4,18 +4,22 @@
 # Copyright (c) 2005-2020, Ilya Etingof <etingof@gmail.com>
 # License: https://pyasn1.readthedocs.io/en/latest/license.html
 #
+import io
 import sys
 import unittest
 
 from tests.base import BaseTestCase
 
+from pyasn1.type import char
 from pyasn1.type import tag
 from pyasn1.type import namedtype
 from pyasn1.type import opentype
 from pyasn1.type import univ
+from pyasn1.codec.ber import decoder as ber_decoder
 from pyasn1.codec.der import decoder
 from pyasn1.codec.der import encoder
 from pyasn1.error import PyAsn1Error
+from pyasn1.error import SubstrateUnderrunError
 
 
 class BitStringDecoderTestCase(BaseTestCase):
@@ -435,6 +439,357 @@ class NestingDepthLimitTestCase(BaseTestCase):
             pass
         except RecursionError:
             assert False, 'Got RecursionError instead of PyAsn1Error'
+
+
+class StrictLengthEncodingTestCase(BaseTestCase):
+    def testShortFormAccepted(self):
+        assert decoder.decode(
+            bytes((4, 3, 1, 2, 3)), strict=True
+        ) == (bytes((1, 2, 3)), b'')
+
+    def testLongFormAccepted(self):
+        # 128 octets genuinely require the long form
+        substrate = bytes((4, 0x81, 128)) + bytes(128)
+        value, rest = decoder.decode(substrate, strict=True)
+        assert value == bytes(128)
+        assert rest == b''
+
+    def testLongFormForShortLengthRejected(self):
+        # 0x81 0x03 encodes length 3 in long form, short form required
+        substrate = bytes((4, 0x81, 3, 1, 2, 3))
+
+        for asn1Spec in None, univ.OctetString():
+            try:
+                decoder.decode(substrate, asn1Spec=asn1Spec, strict=True)
+            except PyAsn1Error as exc:
+                assert 'offset 1' in str(exc)
+                assert '10.1' in str(exc)
+            else:
+                assert 0, 'non-minimal length encoding tolerated'
+
+    def testLeadingZeroLengthOctetsRejected(self):
+        # 0x82 0x00 0x80 encodes length 128 with a redundant leading octet
+        substrate = bytes((4, 0x82, 0, 128)) + bytes(128)
+
+        try:
+            decoder.decode(substrate, strict=True)
+        except PyAsn1Error as exc:
+            assert 'offset 1' in str(exc)
+            assert '10.1' in str(exc)
+        else:
+            assert 0, 'non-minimal length encoding tolerated'
+
+    def testIndefiniteLengthRejected(self):
+        substrate = bytes((0x30, 0x80, 2, 1, 1, 0, 0))
+
+        try:
+            decoder.decode(substrate, strict=True)
+        except PyAsn1Error as exc:
+            assert 'offset 1' in str(exc)
+            assert '10.1' in str(exc)
+        else:
+            assert 0, 'indefinite-length encoding tolerated'
+
+    def testDefaultModeToleratesNonMinimalLength(self):
+        assert decoder.decode(
+            bytes((4, 0x81, 3, 1, 2, 3))
+        ) == (bytes((1, 2, 3)), b'')
+
+    def testBerDecoderAcceptsNonMinimalLength(self):
+        assert ber_decoder.decode(
+            bytes((4, 0x81, 3, 1, 2, 3))
+        ) == (bytes((1, 2, 3)), b'')
+
+    def testBerDecoderAcceptsIndefiniteLength(self):
+        value, rest = ber_decoder.decode(
+            bytes((0x30, 0x80, 2, 1, 1, 0, 0)))
+        assert value == [1]
+        assert rest == b''
+
+
+class StrictIntegerEncodingTestCase(BaseTestCase):
+    def testCanonicalEncodingAccepted(self):
+        for substrate in (bytes((2, 1, 127)),       # 127
+                          bytes((2, 2, 0, 128)),    # 128
+                          bytes((2, 1, 0x80)),      # -128
+                          bytes((2, 2, 0xff, 127))  # -129
+                          ):
+            for asn1Spec in None, univ.Integer():
+                value, rest = decoder.decode(
+                    substrate, asn1Spec=asn1Spec, strict=True)
+                assert not rest
+
+    def testRedundantZeroOctetRejected(self):
+        # 0x00 0x7f: leading zero octet is redundant
+        substrate = bytes((2, 2, 0, 127))
+
+        for asn1Spec in None, univ.Integer():
+            try:
+                decoder.decode(substrate, asn1Spec=asn1Spec, strict=True)
+            except PyAsn1Error as exc:
+                assert 'offset 2' in str(exc)
+                assert '8.3.2' in str(exc)
+            else:
+                assert 0, 'non-minimal INTEGER encoding tolerated'
+
+    def testRedundantFFOctetRejected(self):
+        # 0xff 0x80: leading 0xff octet is redundant (value -128)
+        substrate = bytes((2, 2, 0xff, 0x80))
+
+        for asn1Spec in None, univ.Integer():
+            try:
+                decoder.decode(substrate, asn1Spec=asn1Spec, strict=True)
+            except PyAsn1Error as exc:
+                assert 'offset 2' in str(exc)
+                assert '8.3.2' in str(exc)
+            else:
+                assert 0, 'non-minimal INTEGER encoding tolerated'
+
+    def testEmptyPayloadRejected(self):
+        # zero-length INTEGER payload violates X.690 8.3.1
+        substrate = bytes((2, 0))
+
+        for asn1Spec in None, univ.Integer():
+            try:
+                decoder.decode(substrate, asn1Spec=asn1Spec, strict=True)
+            except PyAsn1Error as exc:
+                assert '8.3.1' in str(exc)
+            else:
+                assert 0, 'empty INTEGER payload tolerated'
+
+    def testEnumeratedNonMinimalEncodingRejected(self):
+        # ENUMERATED shares the INTEGER encoding rules (X.690 8.4)
+        substrate = bytes((10, 2, 0, 5))
+
+        try:
+            decoder.decode(
+                substrate, asn1Spec=univ.Enumerated(), strict=True)
+        except PyAsn1Error as exc:
+            assert '8.3.2' in str(exc)
+        else:
+            assert 0, 'non-minimal ENUMERATED encoding tolerated'
+
+    def testDefaultModeToleratesNonMinimalEncoding(self):
+        assert decoder.decode(bytes((2, 2, 0, 127))) == (127, b'')
+
+    def testBerDecoderAcceptsNonMinimalEncoding(self):
+        assert ber_decoder.decode(bytes((2, 2, 0, 127))) == (127, b'')
+
+
+class StrictBooleanEncodingTestCase(BaseTestCase):
+    def testCanonicalEncodingAccepted(self):
+        for substrate, expected in ((bytes((1, 1, 0)), 0),
+                                    (bytes((1, 1, 0xff)), 1)):
+            for asn1Spec in None, univ.Boolean():
+                value, rest = decoder.decode(
+                    substrate, asn1Spec=asn1Spec, strict=True)
+                assert value == expected
+                assert not rest
+
+    def testNonCanonicalTrueRejected(self):
+        # BER allows any non-zero octet for TRUE, DER requires 0xff
+        substrate = bytes((1, 1, 1))
+
+        for asn1Spec in None, univ.Boolean():
+            try:
+                decoder.decode(substrate, asn1Spec=asn1Spec, strict=True)
+            except PyAsn1Error as exc:
+                assert 'offset 2' in str(exc)
+                assert '11.1' in str(exc)
+            else:
+                assert 0, 'non-canonical BOOLEAN encoding tolerated'
+
+    def testDefaultModeSchemaDrivenPathTolerates(self):
+        # the schema-driven dispatch historically bypasses the CER/DER
+        # BOOLEAN check; strict mode closes that gap
+        assert decoder.decode(
+            bytes((1, 1, 1)), asn1Spec=univ.Boolean()) == (1, b'')
+
+    def testBerDecoderAcceptsNonCanonicalTrue(self):
+        assert ber_decoder.decode(bytes((1, 1, 1))) == (1, b'')
+
+
+class StrictConstructedStringTestCase(BaseTestCase):
+    def testConstructedOctetStringRejected(self):
+        substrate = bytes((0x24, 6, 4, 1, 97, 4, 1, 98))
+
+        for asn1Spec in None, univ.OctetString():
+            try:
+                decoder.decode(substrate, asn1Spec=asn1Spec, strict=True)
+            except PyAsn1Error as exc:
+                assert 'offset 0' in str(exc)
+                assert '10.2' in str(exc)
+            else:
+                assert 0, 'constructed OCTET STRING encoding tolerated'
+
+    def testConstructedBitStringRejected(self):
+        substrate = bytes((0x23, 8, 3, 2, 0, 169, 3, 2, 1, 138))
+
+        for asn1Spec in None, univ.BitString():
+            try:
+                decoder.decode(substrate, asn1Spec=asn1Spec, strict=True)
+            except PyAsn1Error as exc:
+                assert '10.2' in str(exc)
+            else:
+                assert 0, 'constructed BIT STRING encoding tolerated'
+
+    def testConstructedUtf8StringRejected(self):
+        substrate = bytes((0x2c, 6, 12, 1, 97, 12, 1, 98))
+
+        for asn1Spec in None, char.UTF8String():
+            try:
+                decoder.decode(substrate, asn1Spec=asn1Spec, strict=True)
+            except PyAsn1Error as exc:
+                assert '10.2' in str(exc)
+            else:
+                assert 0, 'constructed UTF8String encoding tolerated'
+
+    def testPrimitiveStringsAccepted(self):
+        assert decoder.decode(
+            bytes((4, 2, 97, 98)), strict=True) == (b'ab', b'')
+        assert decoder.decode(
+            bytes((12, 2, 97, 98)), asn1Spec=char.UTF8String(),
+            strict=True) == ('ab', b'')
+
+    def testDefaultModeSchemaDrivenPathTolerates(self):
+        substrate = bytes((0x24, 6, 4, 1, 97, 4, 1, 98))
+        assert decoder.decode(
+            substrate, asn1Spec=univ.OctetString()) == (b'ab', b'')
+
+    def testBerDecoderAcceptsConstructedForm(self):
+        substrate = bytes((0x24, 6, 4, 1, 97, 4, 1, 98))
+        assert ber_decoder.decode(substrate) == (b'ab', b'')
+
+
+class StrictSetOfOrderingTestCase(BaseTestCase):
+    substrate = bytes((0x31, 9, 2, 1, 2, 2, 1, 3, 2, 1, 1))  # {2, 3, 1}
+
+    def testOrderedEncodingAccepted(self):
+        substrate = bytes((0x31, 9, 2, 1, 1, 2, 1, 2, 2, 1, 3))
+
+        for asn1Spec in None, univ.SetOf(componentType=univ.Integer()):
+            value, rest = decoder.decode(
+                substrate, asn1Spec=asn1Spec, strict=True)
+            assert list(value) == [1, 2, 3]
+            assert not rest
+
+    def testUnorderedEncodingRejected(self):
+        for asn1Spec in None, univ.SetOf(componentType=univ.Integer()):
+            try:
+                decoder.decode(
+                    self.substrate, asn1Spec=asn1Spec, strict=True)
+            except PyAsn1Error as exc:
+                assert 'offset 8' in str(exc)
+                assert '11.6' in str(exc)
+            else:
+                assert 0, 'unsorted SET OF encoding tolerated'
+
+    def testDuplicateComponentsAccepted(self):
+        substrate = bytes((0x31, 6, 2, 1, 1, 2, 1, 1))
+        value, rest = decoder.decode(substrate, strict=True)
+        assert list(value) == [1, 1]
+        assert not rest
+
+    def testDefaultModeToleratesUnorderedEncoding(self):
+        value, rest = decoder.decode(self.substrate)
+        assert list(value) == [2, 3, 1]
+
+    def testBerDecoderAcceptsUnorderedEncoding(self):
+        value, rest = ber_decoder.decode(self.substrate)
+        assert list(value) == [2, 3, 1]
+
+
+class StrictSetOrderingTestCase(BaseTestCase):
+    def setUp(self):
+        BaseTestCase.setUp(self)
+
+        self.s = univ.Set(
+            componentType=namedtype.NamedTypes(
+                namedtype.NamedType('a', univ.Integer()),
+                namedtype.NamedType('b', univ.OctetString())
+            )
+        )
+
+    def testOrderedEncodingAccepted(self):
+        # INTEGER (tag 2) sorts before OCTET STRING (tag 4)
+        substrate = bytes((0x31, 8, 2, 1, 5, 4, 3, 1, 2, 3))
+
+        for asn1Spec in None, self.s:
+            value, rest = decoder.decode(
+                substrate, asn1Spec=asn1Spec, strict=True)
+            assert not rest
+
+    def testUnorderedEncodingRejected(self):
+        # OCTET STRING component encoded before INTEGER component
+        substrate = bytes((0x31, 8, 4, 3, 1, 2, 3, 2, 1, 5))
+
+        for asn1Spec in None, self.s:
+            try:
+                decoder.decode(substrate, asn1Spec=asn1Spec, strict=True)
+            except PyAsn1Error as exc:
+                assert 'offset 7' in str(exc)
+                assert '11.5' in str(exc)
+            else:
+                assert 0, 'unsorted SET encoding tolerated'
+
+    def testBerDecoderAcceptsUnorderedEncoding(self):
+        substrate = bytes((0x31, 8, 4, 3, 1, 2, 3, 2, 1, 5))
+        value, rest = ber_decoder.decode(substrate, asn1Spec=self.s)
+        assert value['a'] == 5
+        assert value['b'] == bytes((1, 2, 3))
+
+
+class StrictStreamingDecoderTestCase(BaseTestCase):
+    """Strict checks must not be bypassable by chunked streaming input."""
+
+    class NonBlockingStream(io.BytesIO):
+        block = False
+
+        def read(self, size=-1):
+            self.block = not self.block
+            if self.block:
+                return  # this is what non-blocking streams sometimes do
+
+            return io.BytesIO.read(self, size)
+
+    def testCanonicalEncodingAccepted(self):
+        stream = self.NonBlockingStream(bytes((2, 1, 5)))
+        values = [
+            value for value in decoder.StreamingDecoder(stream, strict=True)
+            if not isinstance(value, SubstrateUnderrunError)
+        ]
+        assert values == [5]
+
+    def testNonMinimalIntegerRejected(self):
+        stream = self.NonBlockingStream(bytes((2, 2, 0, 127)))
+
+        try:
+            list(decoder.StreamingDecoder(stream, strict=True))
+        except PyAsn1Error as exc:
+            assert '8.3.2' in str(exc)
+        else:
+            assert 0, 'non-minimal INTEGER encoding tolerated'
+
+    def testNonMinimalLengthRejected(self):
+        stream = self.NonBlockingStream(bytes((4, 0x81, 3, 1, 2, 3)))
+
+        try:
+            list(decoder.StreamingDecoder(stream, strict=True))
+        except PyAsn1Error as exc:
+            assert '10.1' in str(exc)
+        else:
+            assert 0, 'non-minimal length encoding tolerated'
+
+    def testUnorderedSetOfRejected(self):
+        substrate = bytes((0x31, 9, 2, 1, 2, 2, 1, 3, 2, 1, 1))
+        stream = self.NonBlockingStream(substrate)
+
+        try:
+            list(decoder.StreamingDecoder(stream, strict=True))
+        except PyAsn1Error as exc:
+            assert '11.6' in str(exc)
+        else:
+            assert 0, 'unsorted SET OF encoding tolerated'
 
 
 suite = unittest.TestLoader().loadTestsFromModule(sys.modules[__name__])

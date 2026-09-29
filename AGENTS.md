@@ -85,6 +85,11 @@ downstream callers depend on. Rationale in
   CER's canonical Boolean check are inert there; only
   `supportIndefLength=False` is unconditional. Test strictness changes both
   with and without a schema.
+  The opt-in DER strict mode (`decode(..., strict=True)`, see
+  `StrictSingleItemDecoder` and `STRICT_TAG_MAP`/`STRICT_TYPE_MAP` in
+  `der/decoder.py`) is the exception: it replaces both maps wholesale so
+  both paths enforce DER canonicality. Keep the two strict maps in sync
+  when adding strict checks.
 - **Do not weaken the decoder limits.** `MAX_OID_ARC_CONTINUATION_OCTETS`,
   `MAX_TAG_OCTETS`, `MAX_NESTING_DEPTH` and `MAX_LENGTH_OCTETS` sit at the top
   of `pyasn1/codec/ber/decoder.py`; the unnamed `length > sys.maxsize` guard

@@ -928,6 +928,29 @@ CER/DER decodes through the strict subclasses, breaking every caller that
 currently (if accidentally) relies on DER accepting constructed OCTET STRINGs
 under a schema.
 
+Opt-in DER strict mode closes that gap without disturbing the default
+behavior. `der/decoder.py` builds a parallel `STRICT_TAG_MAP` /
+`STRICT_TYPE_MAP` pair whose decoders reject BER-tolerated encodings that
+DER prohibits, and `StreamingDecoder(..., strict=True)` (likewise
+`decode(..., strict=True)`) swaps its `SINGLE_ITEM_DECODER` for
+`StrictSingleItemDecoder`, which carries those maps. Because both maps are
+complete replacements, the schema-driven and schemaless dispatch paths
+apply the same checks, and recursion (including open-type re-decoding)
+reuses the same decoder instance, so nesting defeats nothing. The checks
+live in two places: strict payload decoders in `der/decoder.py`
+(non-minimal INTEGER per X.690 8.3, canonical BOOLEAN per 11.1,
+constructed string forms per 10.2, SET/SET OF ordering per 11.5/11.6)
+and two no-op hooks added to `ber/decoder.py` for this purpose —
+`SingleItemDecoder._checkLength`, called from the `stDecodeLength` state
+with the length field's offset and raw octets (non-minimal and
+indefinite lengths per 10.1), and
+`ConstructedPayloadDecoderBase._checkComponentOrder`, called per sibling
+pair from the definite-length component loops. SET OF ordering is
+checked by re-encoding each component with the DER encoder rather than
+by seeking back in the stream, so chunked streaming input cannot slip
+past the checks; every violation raises `PyAsn1Error` naming the stream
+offset and the violated X.690 clause.
+
 Registration history has also left dead weight in the maps. The module-level
 `TAG_MAP.update({...})` block in `cer/encoder.py` registers
 `univ.Sequence.typeId: SequenceEncoder()`, an integer key (12) in a map
@@ -1011,6 +1034,9 @@ subclasses, `BitStringPayloadDecoder` and `OctetStringPayloadDecoder`, setting
 `supportIndefLength = False` on its `SingleItemDecoder`; how that one
 attribute shuts indefinite framing off entirely is covered in [Two framing
 modes](#two-framing-modes).
+An opt-in strict mode adds a parallel family of `Strict*` payload
+decoders and `STRICT_TAG_MAP`/`STRICT_TYPE_MAP` maps in the same module;
+see [Registration and import order](#registration-and-import-order).
 
 ### Configuration surfaces
 
@@ -1882,4 +1908,3 @@ them as a drive-by; each needs its own dedicated change with tests.
   literal text. Not worth a churn-heavy rewrite mid-release; if ever fixed,
   do it as a dedicated pass verified with `tox -e docs`, since the file is
   compiled into the `-W` build.
-

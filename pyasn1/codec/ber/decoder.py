@@ -650,6 +650,14 @@ class ConstructedPayloadDecoderBase(AbstractConstructedPayloadDecoder):
     protoRecordComponent = None
     protoSequenceComponent = None
 
+    def _checkComponentOrder(self, previousComponent, component, offset):
+        """Validate canonical ordering of two adjacent components.
+
+        A no-op hook for stricter codecs (e.g. DER strict mode) to reject
+        component orderings that BER tolerates. *offset* is the stream
+        offset at which *component* starts.
+        """
+
     def _getComponentTagMap(self, asn1Object, idx):
         raise NotImplementedError
 
@@ -667,13 +675,23 @@ class ConstructedPayloadDecoderBase(AbstractConstructedPayloadDecoder):
 
         original_position = substrate.tell()
 
+        previousComponent = None
+
         while length == -1 or substrate.tell() < original_position + length:
+            componentOffset = substrate.tell()
+
             for component in decodeFun(substrate, **options):
                 if isinstance(component, SubstrateUnderrunError):
                     yield component
 
             if length == -1 and component is eoo.endOfOctets:
                 break
+
+            if previousComponent is not None:
+                self._checkComponentOrder(
+                    previousComponent, component, componentOffset)
+
+            previousComponent = component
 
             components.append(component)
             componentTypes.add(component.tagSet)
@@ -770,6 +788,7 @@ class ConstructedPayloadDecoderBase(AbstractConstructedPayloadDecoder):
 
             seenIndices = set()
             idx = 0
+            previousComponent = None
             while substrate.tell() - original_position < length:
                 if not namedTypes:
                     componentType = None
@@ -793,9 +812,17 @@ class ConstructedPayloadDecoderBase(AbstractConstructedPayloadDecoder):
                             'Excessive components decoded at %r' % (asn1Spec,)
                         )
 
+                componentOffset = substrate.tell()
+
                 for component in decodeFun(substrate, componentType, **options):
                     if isinstance(component, SubstrateUnderrunError):
                         yield component
+
+                if previousComponent is not None:
+                    self._checkComponentOrder(
+                        previousComponent, component, componentOffset)
+
+                previousComponent = component
 
                 if not isDeterministic and namedTypes:
                     if isSetType:
@@ -913,10 +940,20 @@ class ConstructedPayloadDecoderBase(AbstractConstructedPayloadDecoder):
 
             idx = 0
 
+            previousComponent = None
+
             while substrate.tell() - original_position < length:
+                componentOffset = substrate.tell()
+
                 for component in decodeFun(substrate, componentType, **options):
                     if isinstance(component, SubstrateUnderrunError):
                         yield component
+
+                if previousComponent is not None:
+                    self._checkComponentOrder(
+                        previousComponent, component, componentOffset)
+
+                previousComponent = component
 
                 asn1Object.setComponentByPosition(
                     idx, component,
@@ -1570,6 +1607,17 @@ class SingleItemDecoder(object):
         self._tagCache = {}
         self._tagSetCache = {}
 
+    def _checkLength(self, offset, firstOctet, lengthOctets, length):
+        """Validate a just-decoded length field.
+
+        A no-op hook for stricter codecs (e.g. DER strict mode) to reject
+        length encodings that BER tolerates. *offset* is the stream offset
+        of the first length octet, *firstOctet* the first length octet
+        itself, *lengthOctets* the long-form length octets (None for the
+        short and indefinite forms) and *length* the decoded length (-1
+        for the indefinite form).
+        """
+
     def __call__(self, substrate, asn1Spec=None,
                  tagSet=None, length=None, state=stDecodeTag,
                  decodeFun=None, substrateFun=None,
@@ -1695,11 +1743,15 @@ class SingleItemDecoder(object):
 
             if state is stDecodeLength:
                 # Decode length
+                lengthOffset = substrate.tell()
+
                 for firstOctet in readFromStream(substrate, 1, options):
                     if isinstance(firstOctet, SubstrateUnderrunError):
                         yield firstOctet
 
                 firstOctet = ord(firstOctet)
+
+                lengthOctets = None
 
                 if firstOctet < 128:
                     length = firstOctet
@@ -1729,6 +1781,8 @@ class SingleItemDecoder(object):
                         length |= lengthOctet
                     size += 1
 
+                    lengthOctets = bytes(encodedLength)
+
                     if length > sys.maxsize:
                         raise error.PyAsn1Error(
                             'Length %d exceeds maximum readable size %d' % (
@@ -1737,6 +1791,8 @@ class SingleItemDecoder(object):
 
                 else:  # 128 means indefinite
                     length = -1
+
+                self._checkLength(lengthOffset, firstOctet, lengthOctets, length)
 
                 if length == -1 and not self.supportIndefLength:
                     raise error.PyAsn1Error('Indefinite length encoding not supported by this codec')

@@ -1,6 +1,16 @@
 Revision 0.7.0, released XX-XX-2026
 ---------------------------------------
 
+- Added opt-in strict mode to the DER decoder, enabled with
+  ``decode(..., strict=True)`` or ``StreamingDecoder(..., strict=True)``.
+  Strict mode rejects BER-tolerated encodings that DER prohibits:
+  indefinite-length and non-minimal length fields (X.690 10.1),
+  non-minimal INTEGER contents (X.690 8.3), non-canonical BOOLEAN TRUE
+  values (X.690 11.1), constructed string encodings (X.690 10.2) and
+  unsorted SET/SET OF components (X.690 11.5, 11.6). Violations raise
+  PyAsn1Error carrying the stream offset and the violated X.690 clause,
+  on both the schema-driven and the schemaless dispatch paths. Default
+  decoding behavior is unchanged
 - Fixed OverflowError from BER/CER/DER length values that fit in the
   supported 8-octet length field but exceed the platform maximum readable
   size. Such oversized definite lengths are now rejected with PyAsn1Error.
