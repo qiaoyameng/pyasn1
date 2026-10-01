@@ -65,7 +65,7 @@ here.
 
 ### Module map
 
-The package is thirty-two modules; four carry most of the weight:
+The package is thirty-three modules; four carry most of the weight:
 `type/univ.py` (~3,300 lines), `codec/ber/decoder.py` (~2,200),
 `codec/ber/encoder.py` (~960), `type/constraint.py` (~750).
 
@@ -84,6 +84,7 @@ The package is thirty-two modules; four carry most of the weight:
 | `type/error.py` | A *second* `ValueConstraintError`, the one actually raised |
 | `codec/streaming.py` | `asSeekableStream`, `CachingStreamWrapper`, `readFromStream`: the resumable-stream engine |
 | `codec/ber/decoder.py` | The base decoder: payload decoders, the state machine, every security limit |
+| `codec/ber/events.py` | `EventDecoder`: schema-aware event decoder, decodes selected field paths and structurally skips the rest |
 | `codec/ber/encoder.py` | The base encoder |
 | `codec/ber/eoo.py` | The end-of-octets singleton |
 | `codec/cer/*`, `codec/der/*` | Derived codecs, sharing BER's objects by identity |
@@ -1663,6 +1664,38 @@ not. A stack-frame count in place of the counter re-introduces
 `NestingDepthLimitTestCase` mirrors in `tests/codec/cer/test_decoder.py`
 and `tests/codec/der/test_decoder.py`.
 
+### Selective event decoding
+
+`EventDecoder` (`codec/ber/events.py`) is a fourth decoder entry point,
+beside `Decoder`/`StreamingDecoder`, for diagnostics that need a handful
+of fields out of a large message. It requires an `asn1Spec` and takes a
+`select` list of field paths (component names for SEQUENCE/SET/CHOICE,
+integer indices for SEQUENCE OF/SET OF); iterating it yields
+`DecodeEvent` objects — `enter`/`exit` bracketing containers that hold
+selected fields somewhere below them, `value` for decoded selections,
+`skip` for everything else — each carrying the field path and stream
+offset. Unselected values are skipped structurally in reads of at most
+`SKIP_CHUNK_SIZE` octets, so a multi-megabyte OCTET STRING between two
+wanted integers never materializes in memory.
+
+The walker shares the decoder's mechanics rather than its code: header
+reads re-implement `stDecodeTag`/`stDecodeLength` against the same
+`MAX_TAG_OCTETS`/`MAX_LENGTH_OCTETS`/`sys.maxsize` limits (imported from
+`ber/decoder.py`, not redefined), explicit tags are unwrapped by matching
+wire tags against `tagSet.superTags` outermost-first, CHOICE, SET and
+optional/defaulted components resolve through the same `TagMap` lookups
+the state machine performs, and indefinite lengths terminate on the same
+two-octet end-of-octets probe. Selected subtrees are handed to
+`SingleItemDecoder` whole, so decoded values are identical to `decode()`
+output. Two disciplines are load-bearing. Skips never cross a parent
+boundary: a definite-length field whose announced end (`fieldEnd` in
+`EventDecoder._resolveSchema`) exceeds the enclosing container's content
+end is rejected before its content is touched, and truncation surfaces
+as `EndOfStreamError` out of `readFromStream`, never as a silently short
+skip. And resolution is peek-only: `_resolveSchema` restores the stream
+position in a `finally`, so each field is dispatched (decoded, walked or
+skipped) exactly once from exactly the same offset.
+
 ## Security hardening inventory
 
 The build order ends with the stream; what remains is inventory, and the
@@ -1882,4 +1915,3 @@ them as a drive-by; each needs its own dedicated change with tests.
   literal text. Not worth a churn-heavy rewrite mid-release; if ever fixed,
   do it as a dedicated pass verified with `tox -e docs`, since the file is
   compiled into the `-W` build.
-

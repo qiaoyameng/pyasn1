@@ -1,6 +1,15 @@
 Revision 0.7.0, released XX-XX-2026
 ---------------------------------------
 
+- Added `pyasn1.codec.ber.events.EventDecoder`, a schema-aware,
+  event-driven BER decoder. The caller selects fields to decode by field
+  path; everything else is skipped structurally in bounded-size reads, so
+  unselected values never fully reside in memory. Emitted events
+  (container enter/exit, value, skip) carry field paths and stream
+  offsets. Explicit tags, CHOICE, indefinite-length containers and
+  end-of-octets split across stream chunks are traversed correctly, and
+  skips neither cross enclosing container boundaries nor tolerate
+  truncated input
 - Fixed OverflowError from BER/CER/DER length values that fit in the
   supported 8-octet length field but exceed the platform maximum readable
   size. Such oversized definite lengths are now rejected with PyAsn1Error.
